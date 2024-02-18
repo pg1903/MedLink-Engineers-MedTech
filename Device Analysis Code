@@ -1,0 +1,103 @@
+import serial
+import numpy as np
+import filterpy.kalman as kalman
+import time
+
+SERIAL_PORT = 'usbserial-110'
+BAUD_RATE = 115200
+
+#initialize connection to serial
+ser = serial.Serial(SERIAL_PORT, BAUD_RATE)
+
+
+#for filter
+def initialize_kalman():
+    kf = kalman(dim_x=3, dim_z=3) #3 directions for acceleration
+    kf.F = np.eye(3) #state transition matrix
+    kf.H = np.eye(3) #measurement function
+    kf.R = np.eye(3) #measurement noise
+    kf.P *= 0.1 #covariance
+    kf.Q = np.eye(3) * 0.1 #process noise
+    return kf
+
+
+#for reading in Arduino data into Python
+def read_sensor_data():
+  arr = np.empty(0)
+    try:
+      while True:
+          data = ser.readline().decode().strip()
+          new = np.fromstring(input_string, dtype=float, sep=' ')
+          arr = np.vstack(arr, new)
+    except KeyboardInterrupt:
+    # If Ctrl+C is pressed, close the serial port.
+      ser.close()
+
+
+#integrate acceleration to get displacement
+def double_integration(acceleration_data, dt):
+    velocity = np.divide(np.cumsum(acceleration_data, axis=0),2) * dt
+    displacement = np.divide(np.cumsum(velocity, axis=0),2) * dt
+    return displacement
+
+
+#calibrate the device for 10 minutes to get maximum displacement at rest
+def calibration(duration_min = 10, kf = None):
+    start_time = time.time()
+    displacements = []
+
+    while(time.time() - start_time) < (duration_min * 60):
+        accel_data = read_sensor_data()
+        if accel_data is not None:
+            if kf:
+                kf.predict()
+                kf.update()
+                filtered_accel = kf.x
+            else:
+                filtered_accel = accel_data
+            displacement, _ = double_integration(filtered_accel, 0.5) #### NEED TO ENTER dt HERE
+            displacements.append(np.linalg.norm(displacement))
+    max_displacement = np.max(displacements)
+    return max_displacement
+
+give_warning = False
+#start the device functionality - start monitoring chest displacements
+def monitor_breathing(threshold, kf = None):
+    prev_velocity = np.array([0.0, 0.0, 0.0])
+    while True:
+        accel_data, _ = read_sensor_data()
+        if accel_data is not None:
+            if kf:
+                kf.predict()
+                kf.update(accel_data)
+                filtered_accel = kf.x
+            else:
+                filtered_accel = accel_data
+            displacement, previous_velocity = double_integration(filtered_accel, 0.5) #### NEED TO ENTER dt HERE
+            #if the displacement during monitoring exceeeds the threshold by more then 10%, give a warning. Ideally, this would be the buzzer that rings in the device
+            if np.linalg.norm(displacement) > 1.1*threshold:
+                print("Warning, possibility of asthma attack")
+                give_warning = True
+
+while give_warning == True:
+    buzzer = 'ON'
+    ser.write(buzzer.encode())
+
+
+if __name__ == "__main__":
+    print("Calibrating, please wait...")
+    kf = initialize_kalman()
+    max_displacement_at_rest = calibration(kf=kf)
+    print("Calibration complete, monitoring now")
+    monitor_breathing(max_displacement_at_rest, kf=kf)
+
+
+
+
+
+
+
+
+
+
+
